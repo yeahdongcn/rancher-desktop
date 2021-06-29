@@ -7,7 +7,8 @@ import timers from 'timers';
 import Logging from '../utils/logging';
 import resources from '../resources';
 
-const REFRESH_INTERVAL = 5 * 1000;
+const IMAGE_RETRIEVAL_TIMEOUT = 5 * 1000;
+const MAX_PROCESS_RUNTIME = 10 * 1000; // Kill hanging/runaway processes
 
 const console = new Console(Logging.kim.stream);
 
@@ -27,23 +28,33 @@ interface imageType {
 
 export default class Kim extends EventEmitter {
   private showedStderr = false;
-  private refreshInterval: ReturnType<typeof timers.setInterval> | null = null;
+  private imageRefreshHandle: ReturnType<typeof timers.setTimeout> | undefined;
   // During startup `kim images` repeatedly fires the same error message. Instead,
   // keep track of the current error and give a count instead.
   private lastErrorMessage = '';
   private sameErrorMessageCount = 0;
   private images: imageType[] = [];
   private _isReady = false;
+  private _requestToStop = false;
 
   start() {
     this.stop();
-    this.refreshInterval = timers.setInterval(this.refreshImages.bind(this), REFRESH_INTERVAL);
+    this.wrapRefreshImages();
+  }
+
+  wrapRefreshImages() {
+    this.refreshImages().catch((err) => {
+      console.log(`Error refreshing images: ${ err }`);
+    });
   }
 
   stop() {
-    if (this.refreshInterval) {
-      timers.clearInterval(this.refreshInterval);
-      this.refreshInterval = null;
+    //TODO: Delete this function?
+    console.log(`QQQ: Got a request to stop getting images`);
+    this._requestToStop = true;
+    if (this.imageRefreshHandle) {
+      timers.clearTimeout(this.imageRefreshHandle);
+      this.imageRefreshHandle = undefined;
     }
   }
 
@@ -52,8 +63,14 @@ export default class Kim extends EventEmitter {
   }
 
   async runCommand(args: string[], sendNotifications = true): Promise<childResultType> {
+    console.log(`QQQ: runCommand: run kim ${ args.join(' ')}`);
     const child = spawn(resources.executable('kim'), args);
     const result = { stdout: '', stderr: '' };
+    let processReaperHandle: NodeJS.Timeout | null = args[0] === 'images' ? timers.setTimeout(() => {
+      processReaperHandle = null;
+      console.log(`QQQ: processReaperHandler fired, result of killing child for cmd [${ args.join(' ') }] is: ${ child.kill() }`);
+      //      child.kill();
+    }, MAX_PROCESS_RUNTIME) : null;
 
     return await new Promise((resolve, reject) => {
       child.stdout.on('data', (data: Buffer) => {
@@ -73,6 +90,13 @@ export default class Kim extends EventEmitter {
         }
       });
       child.on('exit', (code, signal) => {
+        if (processReaperHandle) {
+          console.log(`QQQ: command exited : clearing processReaperHandle ${ processReaperHandle[Symbol.toPrimitive]() }`);
+          clearTimeout(processReaperHandle);
+          processReaperHandle = null;
+        } else if (args[0] === 'images') {
+          console.log(`QQQ: are we handling an exit after running the process-reaper timeout handler?`);
+        }
         if (result.stderr) {
           const timeLessMessage = result.stderr.replace(/\btime=".*?"/g, '');
 
@@ -84,8 +108,18 @@ export default class Kim extends EventEmitter {
             const m = /(Error: .*)/.exec(this.lastErrorMessage);
 
             this.sameErrorMessageCount += 1;
-            console.log(`kim ${ args[0] }: ${ m ? m[1] : 'same error message' } #${ this.sameErrorMessageCount }\r`);
+            console.log(`kim ${args[0]}: ${m ? m[1] : 'same error message'} #${this.sameErrorMessageCount}\r`);
           }
+          if (args[0] === 'images' && !this._requestToStop) {
+            console.log(`QQQ: kim scheduling next images check in ${ (IMAGE_RETRIEVAL_TIMEOUT + 500 * this.sameErrorMessageCount) / 1000 } secs`);
+            this.imageRefreshHandle = timers.setTimeout(() => {
+              this.wrapRefreshImages();
+            }, IMAGE_RETRIEVAL_TIMEOUT + 500 * this.sameErrorMessageCount);
+          } else {
+            console.log(`QQQ: not scheduling another run with stderr: (args[0] === [${ args[0] }] && this._requestToStop = ${ this._requestToStop}`);
+          }
+        } else {
+          console.log(`QQQ: not scheduling another run with no stderr: args[0] === [${ args[0] }]`);
         }
         if (code === 0) {
           resolve({ ...result, code });
@@ -100,6 +134,14 @@ export default class Kim extends EventEmitter {
     });
   }
 
+  async runRefreshableCommand(args: Array<string>): Promise<childResultType> {
+    const resultCode = await this.runCommand(args);
+
+    this.wrapRefreshImages();
+
+    return resultCode;
+  }
+
   async buildImage(dirPart: string, filePart: string, taggedImageName: string): Promise<childResultType> {
     const args = ['build'];
 
@@ -109,19 +151,19 @@ export default class Kim extends EventEmitter {
     args.push(taggedImageName);
     args.push(dirPart);
 
-    return await this.runCommand(args);
+    return await this.runRefreshableCommand(args);
   }
 
   async deleteImage(imageID: string): Promise<childResultType> {
-    return await this.runCommand(['rmi', imageID]);
+    return await this.runRefreshableCommand(['rmi', imageID]);
   }
 
   async pullImage(taggedImageName: string): Promise<childResultType> {
-    return await this.runCommand(['pull', taggedImageName, '--debug']);
+    return await this.runRefreshableCommand(['pull', taggedImageName, '--debug']);
   }
 
   async pushImage(taggedImageName: string): Promise<childResultType> {
-    return await this.runCommand(['push', taggedImageName, '--debug']);
+    return await this.runRefreshableCommand(['push', taggedImageName, '--debug']);
   }
 
   async getImages(): Promise<childResultType> {
@@ -145,6 +187,7 @@ export default class Kim extends EventEmitter {
   }
 
   async refreshImages() {
+    this._requestToStop = false;
     try {
       const result: childResultType = await this.getImages();
 

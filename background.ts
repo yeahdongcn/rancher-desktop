@@ -650,6 +650,7 @@ function newK8sManager() {
     if (state === K8s.State.STARTED) {
       imageManager.start();
     } else {
+      console.log(`QQQ: bg mgr; calling imageManager.stop() because state-changed`)
       imageManager.stop();
     }
   });
