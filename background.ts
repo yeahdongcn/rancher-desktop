@@ -27,7 +27,7 @@ let k8smanager: K8s.KubernetesBackend;
 let imageManager: Kim;
 let cfg: settings.Settings;
 let tray: Tray;
-let gone = false; // when true indicates app is shutting down
+let gone = (process.env.NODE_ENV || '').startsWith('test'); // when true indicates app is shutting down
 let lastBuildDirectory = '';
 
 if (!Electron.app.requestSingleInstanceLock()) {
@@ -77,7 +77,7 @@ Electron.app.whenReady().then(async() => {
   // TODO: Check if first install and start welcome screen
   // TODO: Check if new version and provide window with details on changes
 
-  if (!Electron.app.isPackaged) {
+  if ((process.env.NODE_ENV || '').startsWith('dev')) {
     // Install devtools; no need to wait for it to complete.
     const { default: installExtension, VUEJS_DEVTOOLS } = require('electron-devtools-installer');
 

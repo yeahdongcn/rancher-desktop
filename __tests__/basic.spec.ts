@@ -1,33 +1,36 @@
+import path from 'path';
+import util from 'util';
+
+import Electron from 'electron';
 import { Application } from 'spectron';
 
-jest.setTimeout(1000000);
-const path = require('path');
+jest.setTimeout(1_000_000);
 
 const app = new Application({
-/*   path: path.join(__dirname, '..', '/node_modules/.bin/electron'),
-  args: [path.join(__dirname, '..', '/dist/app/background.js')],
-  webdriverOptions: {} */
-  path: 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Rancher Desktop\\Rancher Desktop.exe'
+  path: Electron as any,
+  args: [path.join(__dirname, '..')],
+  chromeDriverArgs: ['--disable-extensions'],
+  env: {
+    SPECTRON: true,
+    NODE_ENV: 'test',
+  },
 });
 
 it('opens the window', async () => {
-    await app.start().then(function () {
-        // Check if the window is visible
-        return app.browserWindow.isVisible()
-      }).then(function (isVisible) {
-        // Verify the window is visible
-        expect(isVisible).toBe(true);
-      }).then(function () {
-        // Get the window's title
-        return app.client.getTitle()
-      }).then(function (title) {
-        // Verify the window's title
-        expect(title).toBe('Rancher Desktopp');
-      }).then(function () {
-        // Stop the application
-        return app.stop()
-      }).catch(function (error) {
-        // Log any failures
-        console.error('Test failed', error.message)
-    });
+  try {
+    await app.start();
+    console.log('App started');
+    await app.client.waitUntilWindowLoaded();
+    console.log('Browser loaded');
+    expect(await app.client.getTitle()).toBe('Rancher Desktopp');
+  } finally {
+    try {
+      if (app.isRunning()) {
+        await app.stop();
+      }
+    } catch (error) {
+      console.error(error);
+      // Don't propagate the error.
+    }
+  }
 });
